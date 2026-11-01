@@ -20,6 +20,8 @@ Copy `.env.example` to `.env` for local development and set the site's actual co
 
 ## Run
 
+Node.js 22 or newer is required (`googleapis` and `openai` both declare `node >= 22`); `.nvmrc` pins 22 for local and host builds.
+
 ```sh
 npm ci
 npm run build
@@ -35,7 +37,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` runs the evaluator, slot-evaluation, and calendar parsing suites with the Node test runner. The suites cover the deterministic safety gate, fail-closed behaviour when DeepSeek is unconfigured, slot status decisions, ETag conflict retries, and calendar event parsing.
+`npm test` runs the evaluator, slot-evaluation, and calendar parsing suites with the Node test runner. The suites cover the deterministic safety gate, fail-closed behaviour when DeepSeek is unconfigured, slot status decisions, ETag conflict retries, and calendar event parsing. GitHub Actions runs these same checks on every push to `main` and every pull request, plus a smoke test that starts the built server with no credentials and asserts `/api/slots/available` responds `503` rather than serving availability.
 
 ## API
 
