@@ -4,3 +4,9 @@ dist/
 .env.*
 !.env.example
 npm-debug.log*
+preview*.log
+preview.pid
+preview-cookie.txt
+server*.log
+server.pid
+.preview-site-config.json

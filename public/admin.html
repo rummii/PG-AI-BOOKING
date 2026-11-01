@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Operations · Flight control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body>
+    <header class="admin-header">
+      <a class="admin-brand" href="/">
+        <span class="admin-brand-mark" aria-hidden="true">✳</span>
+        <span>Flight control</span>
+      </a>
+      <div class="admin-header-right">
+        <span id="session-status" class="session-status" data-state="unknown">Checking session…</span>
+        <button id="sign-out" class="button-ghost" type="button" hidden>Sign out</button>
+        <a class="button-ghost" href="/">View site ↗</a>
+      </div>
+    </header>
+
+    <main class="admin-shell">
+      <section id="login-panel" class="panel login-panel" hidden>
+        <h1>Operator sign-in</h1>
+        <p class="panel-lede">
+          Enter the admin token. It is exchanged for an 8-hour HttpOnly session cookie — the token
+          itself is never stored in the browser.
+        </p>
+        <form id="login-form" class="login-form" autocomplete="off">
+          <label class="field">
+            <span>Admin token</span>
+            <input id="login-token" name="token" type="password" required minlength="8" autocomplete="current-password" />
+          </label>
+          <button class="button-primary" type="submit">Sign in</button>
+          <p id="login-error" class="form-alert" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <div id="workspace" hidden>
+        <nav class="tabs" role="tablist" aria-label="Admin sections">
+          <button type="button" class="tab is-active" role="tab" id="tab-outlook" aria-selected="true" aria-controls="panel-outlook" data-tab="outlook">Weather outlook</button>
+          <button type="button" class="tab" role="tab" id="tab-slots" aria-selected="false" aria-controls="panel-slots" data-tab="slots">Slots</button>
+          <button type="button" class="tab" role="tab" id="tab-policy" aria-selected="false" aria-controls="panel-policy" data-tab="policy">Booking policy</button>
+          <button id="refresh" class="button-ghost tab-refresh" type="button">Refresh</button>
+        </nav>
+
+        <div id="global-alert" class="form-alert" role="alert" hidden></div>
+
+        <section id="panel-outlook" class="panel" role="tabpanel" aria-labelledby="tab-outlook">
+          <div class="panel-head">
+            <div>
+              <h2>Weather decision dashboard</h2>
+              <p class="panel-lede">Deterministic site envelope, recomputed from the live forecast. No model call, no lag.</p>
+            </div>
+            <div id="outlook-meta" class="meta-chips"></div>
+          </div>
+
+          <div id="kpi-grid" class="kpi-grid"></div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>Flyability score by hour</h3>
+              <span class="card-hint">Dashed line = the 60-point threshold for a flyable window</span>
+            </div>
+            <div id="score-chart" class="chart"></div>
+            <details class="chart-fallback">
+              <summary>Show the same data as a table</summary>
+              <div id="score-table" class="table-wrap"></div>
+            </details>
+          </div>
+
+          <div class="grid-two">
+            <div class="card">
+              <div class="card-head"><h3>Limiting factor frequency</h3></div>
+              <div id="rule-chart" class="bars"></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>Recommended windows</h3></div>
+              <ul id="window-list" class="window-list"></ul>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Day by day</h3></div>
+            <div id="daily-table" class="table-wrap"></div>
+          </div>
+        </section>
+        <section id="panel-slots" class="panel" role="tabpanel" aria-labelledby="tab-slots" hidden>
+          <div class="panel-head">
+            <div>
+              <h2>Slots</h2>
+              <p class="panel-lede">Every departure on the calendar. New slots start locked so weather decides when they open.</p>
+            </div>
+            <div class="button-row">
+              <label class="field field-inline">
+                <span>Horizon</span>
+                <select id="slot-days">
+                  <option value="14">14 days</option>
+                  <option value="30" selected>30 days</option>
+                  <option value="60">60 days</option>
+                </select>
+              </label>
+              <button id="materialise" class="button-ghost" type="button">Materialise templates</button>
+            </div>
+          </div>
+
+          <form id="create-slot-form" class="card form-row">
+            <div class="card-head"><h3>Add a slot</h3></div>
+            <div class="field-grid">
+              <label class="field"><span>Date</span><input name="date" type="date" required /></label>
+              <label class="field"><span>Time</span><input name="time" type="time" required /></label>
+              <label class="field"><span>Minutes</span><input name="durationMinutes" type="number" min="30" max="480" step="15" value="120" required /></label>
+              <label class="field"><span>Seats</span><input name="maxPax" type="number" min="1" max="16" value="4" required /></label>
+              <label class="field field-wide"><span>Label</span><input name="label" type="text" maxlength="120" placeholder="Morning tandem block" required /></label>
+            </div>
+            <button class="button-primary" type="submit">Create locked slot</button>
+          </form>
+
+          <div id="slot-counts" class="meta-chips"></div>
+          <div class="table-wrap"><table id="slot-table" class="data-table"></table></div>
+        </section>
+
+        <section id="panel-policy" class="panel" role="tabpanel" aria-labelledby="tab-policy" hidden>
+          <div class="panel-head">
+            <div>
+              <h2>Booking policy</h2>
+              <p class="panel-lede">
+                Steering only: policy hides or highlights slots. It can never open a slot the weather
+                envelope has closed.
+              </p>
+            </div>
+            <span id="policy-etag" class="etag-chip"></span>
+          </div>
+
+          <form id="policy-form" class="card">
+            <div class="card-head"><h3>Rules</h3></div>
+            <div class="field-grid">
+              <label class="field"><span>Booking window (days)</span><input name="bookingWindowDays" type="number" min="1" max="90" required /></label>
+              <label class="field"><span>Minimum lead time (hours)</span><input name="minLeadHours" type="number" min="0" max="168" required /></label>
+              <label class="field"><span>Default seats per slot</span><input name="defaultMaxPax" type="number" min="1" max="16" required /></label>
+              <label class="field">
+                <span>Mode</span>
+                <select name="mode">
+                  <option value="open">Open — show every bookable slot</option>
+                  <option value="focus-first">Focus first — show all, push the focus window</option>
+                  <option value="focus-only">Focus only — hide everything outside the focus window</option>
+                </select>
+              </label>
+              <label class="field field-wide"><span>Notice banner</span><input name="notice" type="text" maxlength="240" placeholder="Shown to bookers above the calendar" /></label>
+            </div>
+
+            <fieldset class="fieldset">
+              <legend>Focus window</legend>
+              <div class="field-grid">
+                <label class="field"><span>Label</span><input name="focusLabel" type="text" maxlength="60" placeholder="Autumn thermals week" /></label>
+                <label class="field"><span>From</span><input name="focusFrom" type="date" /></label>
+                <label class="field"><span>To</span><input name="focusTo" type="date" /></label>
+              </div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+              <legend>Closed weekdays</legend>
+              <div id="weekday-toggles" class="chip-toggles"></div>
+            </fieldset>
+
+            <label class="field field-wide">
+              <span>Blackout dates (one per line, YYYY-MM-DD)</span>
+              <textarea name="blackouts" rows="4" placeholder="2026-12-24&#10;2026-12-25"></textarea>
+            </label>
+
+            <div class="button-row">
+              <button class="button-primary" type="submit">Save policy</button>
+              <span id="policy-status" class="form-note"></span>
+            </div>
+          </form>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>Weekly templates</h3>
+              <button id="add-template" class="button-ghost" type="button">Add template</button>
+            </div>
+            <p class="card-hint">The worker materialises these ahead of the booking window, skipping closed days.</p>
+            <div id="template-editor" class="template-editor"></div>
+            <div class="button-row">
+              <button id="save-templates" class="button-primary" type="button">Save templates</button>
+              <span id="template-status" class="form-note"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Recent changes</h3></div>
+            <ul id="audit-list" class="audit-list"></ul>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="/admin.js" type="module"></script>
+  </body>
+</html>

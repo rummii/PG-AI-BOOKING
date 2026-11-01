@@ -14,8 +14,27 @@ import {
   isCalendarConfigured,
 } from "./services/calendar.js";
 import { evaluateAndSyncSlot } from "./services/slot-evaluation.js";
+import {
+  applyBookingPolicy,
+  buildDayRail,
+  policyNotice,
+  summarisePolicy,
+} from "./services/booking-policy.js";
+import { defaultPolicy, getSiteConfig } from "./services/site-config.js";
+import { adminControlPlaneEnabled, registerAdminRoutes } from "./routes/admin.js";
+import type { BookingPolicy } from "./types.js";
 
-const app = Fastify({ logger: { level: config.LOG_LEVEL } });
+const app = Fastify({ logger: { level: config.LOG_LEVEL }, trustProxy: config.TRUST_PROXY });
+
+/** Policy reads must never take the public page down; a broken config falls back to defaults. */
+async function loadPolicy(): Promise<BookingPolicy> {
+  try {
+    return (await getSiteConfig()).policy;
+  } catch (error) {
+    app.log.warn({ err: error }, "Booking policy unavailable, using defaults");
+    return defaultPolicy();
+  }
+}
 
 app.get("/", async (_request, reply) => {
   return reply.type("text/html; charset=utf-8").send(
@@ -34,6 +53,19 @@ app.get("/app.js", async (_request, reply) => {
     await readFile(new URL("../public/app.js", import.meta.url)),
   );
 });
+
+const adminAssets = [
+  { route: "/admin", file: "admin.html", type: "text/html; charset=utf-8" },
+  { route: "/admin.js", file: "admin.js", type: "text/javascript; charset=utf-8" },
+  { route: "/admin.css", file: "admin.css", type: "text/css; charset=utf-8" },
+] as const;
+
+for (const asset of adminAssets) {
+  app.get(asset.route, async (_request, reply) => {
+    if (!adminControlPlaneEnabled()) return reply.status(404).send({ error: "Not found" });
+    return reply.type(asset.type).send(await readFile(new URL(`../public/${asset.file}`, import.meta.url)));
+  });
+}
 
 const passengerSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -125,16 +157,31 @@ app.get("/api/slots/available", async (request, reply) => {
   }
 
   const slots = await getUpcomingSlots(from, to);
+  const now = new Date();
+  const policy = await loadPolicy();
+  const applied = applyBookingPolicy(slots, { policy, now });
   return {
-    slots: slots
-      .filter((slot) => slot.status === "OPEN" && slot.bookedPax < slot.maxPax)
-      .map((slot) => ({
-        id: slot.id,
-        summary: slot.summary.replace(/^\[(?:OPEN|STANDBY|LOCKED|CONFIRMED|WX CANCEL)\]\s*/i, ""),
-        start: slot.start.toISOString(),
-        end: slot.end.toISOString(),
-        remainingCapacity: slot.maxPax - slot.bookedPax,
+    slots: applied
+      .filter(
+        (entry) =>
+          entry.hiddenReason === null &&
+          entry.slot.status === "OPEN" &&
+          entry.slot.bookedPax < entry.slot.maxPax,
+      )
+      .map((entry) => ({
+        id: entry.slot.id,
+        summary: entry.slot.summary.replace(
+          /^\[(?:OPEN|STANDBY|LOCKED|CONFIRMED|WX CANCEL|CANCELLED)\]\s*/i,
+          "",
+        ),
+        start: entry.slot.start.toISOString(),
+        end: entry.slot.end.toISOString(),
+        remainingCapacity: entry.slot.maxPax - entry.slot.bookedPax,
+        recommended: entry.recommended,
       })),
+    policy: summarisePolicy({ policy, now }),
+    notice: policyNotice({ policy, now }),
+    days: buildDayRail(applied, { policy, now }, 14),
   };
 });
 
@@ -195,10 +242,11 @@ app.post("/api/admin/evaluate-now", async (request, reply) => {
   return { evaluated: results.length, results };
 });
 
+registerAdminRoutes(app);
+
 app.setNotFoundHandler(async (_request, reply) => {
   return reply.status(404).send({ error: "Not found" });
 });
-
 async function start(): Promise<void> {
   try {
     await app.listen({ port: config.PORT, host: "0.0.0.0" });

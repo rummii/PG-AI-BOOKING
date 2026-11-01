@@ -10,6 +10,22 @@ const PREFIX_STATUS: Record<SlotStatus, string> = {
   CANCELLED: "[WX CANCEL]",
 };
 
+/** Admin cancellations are not weather cancellations; keep them visually distinct in the agenda. */
+const ADMIN_CANCEL_PREFIX = "[CANCELLED]";
+
+const STATUS_COLOR: Record<SlotStatus, string> = {
+  OPEN: "10",
+  CONFIRMED: "10",
+  STANDBY: "5",
+  CANCELLED: "11",
+  LOCKED: "8",
+};
+
+/** The config event is parked in 1990 so it can never appear in an availability query. */
+const CONFIG_EVENT_START = "1990-01-01T00:00:00Z";
+const CONFIG_EVENT_END = "1990-01-01T00:05:00Z";
+const CONFIG_EVENT_SUMMARY = "[CONFIG] Site booking configuration";
+
 export class CalendarConflictError extends Error {}
 
 function httpStatus(error: unknown): number | undefined {
@@ -66,6 +82,16 @@ export function parseSlot(event: calendar_v3.Schema$Event): SlotEvent | null {
   const privateProperties = event.extendedProperties?.private ?? {};
   const maxPax = Number(privateProperties.maxPax ?? config.DEFAULT_MAX_PAX);
   const bookedPax = Number(privateProperties.bookedPax ?? 0);
+  const verdictValue = privateProperties.deepseekVerdict;
+  const verdict =
+    verdictValue === "FLYABLE" || verdictValue === "MARGINAL" || verdictValue === "NO_GO"
+      ? verdictValue
+      : undefined;
+  const confidence = Number(privateProperties.confidence);
+  const factors = (privateProperties.limitingFactors ?? "")
+    .split(";")
+    .map((factor) => factor.trim())
+    .filter(Boolean);
   return {
     id: event.id,
     ...(event.etag ? { etag: event.etag } : {}),
@@ -77,6 +103,11 @@ export function parseSlot(event: calendar_v3.Schema$Event): SlotEvent | null {
     maxPax: Number.isInteger(maxPax) && maxPax > 0 ? maxPax : config.DEFAULT_MAX_PAX,
     bookedPax: Number.isInteger(bookedPax) && bookedPax >= 0 ? bookedPax : 0,
     manualOverride: privateProperties.manualOverride?.toLowerCase() === "true",
+    ...(verdict ? { verdict } : {}),
+    ...(Number.isFinite(confidence) && confidence > 0 ? { confidence } : {}),
+    ...(privateProperties.lastEvaluatedAt ? { lastEvaluatedAt: privateProperties.lastEvaluatedAt } : {}),
+    ...(factors.length > 0 ? { limitingFactors: factors } : {}),
+    ...(privateProperties.reasoningSummary ? { reasoningSummary: privateProperties.reasoningSummary } : {}),
   };
 }
 
@@ -126,7 +157,7 @@ export async function getSlotById(slotId: string): Promise<SlotEvent | null> {
 }
 
 function stripStatusPrefix(summary: string): string {
-  return summary.replace(/^\[(?:OPEN|STANDBY|LOCKED|CONFIRMED|WX CANCEL)\]\s*/i, "");
+  return summary.replace(/^\[(?:OPEN|STANDBY|LOCKED|CONFIRMED|WX CANCEL|CANCELLED)\]\s*/i, "");
 }
 
 export async function updateSlotState(
@@ -159,14 +190,7 @@ export async function updateSlotState(
         eventId: slotId,
         requestBody: {
           summary: `${PREFIX_STATUS[status]} ${stripStatusPrefix(existing.summary ?? "Paragliding booking slot")}`,
-          colorId:
-            status === "OPEN" || status === "CONFIRMED"
-              ? "10"
-              : status === "STANDBY"
-                ? "5"
-                : status === "CANCELLED"
-                  ? "11"
-                  : "8",
+          colorId: STATUS_COLOR[status],
           description: existing.description ?? "",
           extendedProperties: {
             ...existing.extendedProperties,
@@ -253,3 +277,240 @@ export async function bookSlot(
 export async function syncCalendarSlots(timeMin: Date, timeMax: Date): Promise<SlotEvent[]> {
   return getUpcomingSlots(timeMin, timeMax);
 }
+
+export async function cancelSlot(slotId: string, reason: string): Promise<SlotEvent> {
+  return applySlotOverride(slotId, { status: "CANCELLED", manualOverride: true, reason });
+}
+
+/** Hard-deletes an empty slot. Refuses when seats are already sold. */
+export async function deleteSlot(slotId: string): Promise<void> {
+  const calendar = getCalendar();
+  const event = await calendar.events.get({
+    calendarId: config.PARAGLIDING_CALENDAR_ID!,
+    eventId: slotId,
+  });
+  const slot = parseSlot(event.data);
+  if (!slot) throw new Error("Calendar event is not a booking slot");
+  if (slot.bookedPax > 0) {
+    throw new Error("Cannot delete a slot with confirmed bookings; cancel it instead");
+  }
+  try {
+    await calendar.events.delete({
+      calendarId: config.PARAGLIDING_CALENDAR_ID!,
+      eventId: slotId,
+    });
+  } catch (error) {
+    if (httpStatus(error) === 404) return;
+    throw error;
+  }
+}
+
+export interface ConfigEventSnapshot {
+  description: string;
+  etag?: string;
+  exists: boolean;
+}
+
+/** Reads the reserved config event, tolerating its absence on a fresh calendar. */
+export async function readConfigEvent(eventId: string): Promise<ConfigEventSnapshot> {
+  const calendar = getCalendar();
+  try {
+    const response = await calendar.events.get({
+      calendarId: config.PARAGLIDING_CALENDAR_ID!,
+      eventId,
+    });
+    return {
+      description: response.data.description ?? "",
+      ...(response.data.etag ? { etag: response.data.etag } : {}),
+      exists: true,
+    };
+  } catch (error) {
+    if (httpStatus(error) === 404) return { description: "", exists: false };
+    throw error;
+  }
+}
+
+/**
+ * Writes the config event, creating it on first use. `expectedEtag` turns the write into a
+ * compare-and-swap so two operators saving at once cannot silently drop each other's edits.
+ */
+export async function writeConfigEvent(
+  eventId: string,
+  payload: string,
+  expectedEtag?: string,
+): Promise<{ etag?: string }> {
+  const calendar = getCalendar();
+  const requestBody = {
+    id: eventId,
+    summary: CONFIG_EVENT_SUMMARY,
+    description: payload,
+    transparency: "transparent",
+    start: { dateTime: CONFIG_EVENT_START, timeZone: "UTC" },
+    end: { dateTime: CONFIG_EVENT_END, timeZone: "UTC" },
+    extendedProperties: { private: { kind: "SITE_CONFIG", status: "LOCKED" } },
+  };
+
+  let etag = expectedEtag;
+  if (!etag) {
+    const current = await readConfigEvent(eventId);
+    if (!current.exists) {
+      const inserted = await calendar.events.insert({
+        calendarId: config.PARAGLIDING_CALENDAR_ID!,
+        requestBody,
+      });
+      return inserted.data.etag ? { etag: inserted.data.etag } : {};
+    }
+    if (!current.etag) throw new Error("Config event did not return an ETag");
+    etag = current.etag;
+  }
+
+  try {
+    const updated = await calendar.events.update(
+      { calendarId: config.PARAGLIDING_CALENDAR_ID!, eventId, requestBody },
+      { headers: { "If-Match": etag } },
+    );
+    return updated.data.etag ? { etag: updated.data.etag } : {};
+  } catch (error) {
+    const statusCode = httpStatus(error);
+    if (statusCode === 412 || statusCode === 409) {
+      throw new CalendarConflictError("Configuration changed since you loaded it");
+    }
+    throw error;
+  }
+}
+
+
+export interface CreateSlotInput {
+  start: Date;
+  end: Date;
+  maxPax: number;
+  label?: string;
+  description?: string;
+  status?: SlotStatus;
+}
+
+/**
+ * Creates a slot that is not yet sellable. Templates and manual slots both start LOCKED so the
+ * weather worker — not the admin form — decides when the calendar opens for bookings.
+ */
+export async function createSlot(input: CreateSlotInput): Promise<SlotEvent> {
+  if (input.end.getTime() <= input.start.getTime()) {
+    throw new Error("Slot end must be after its start");
+  }
+  const calendar = getCalendar();
+  const status = input.status ?? "LOCKED";
+  const response = await calendar.events.insert({
+    calendarId: config.PARAGLIDING_CALENDAR_ID!,
+    requestBody: {
+      summary: `${PREFIX_STATUS[status]} ${(input.label ?? "Paragliding booking slot").slice(0, 160)}`,
+      description: input.description ?? "",
+      start: { dateTime: input.start.toISOString(), timeZone: "UTC" },
+      end: { dateTime: input.end.toISOString(), timeZone: "UTC" },
+      colorId: STATUS_COLOR[status],
+      extendedProperties: {
+        private: {
+          status,
+          maxPax: String(input.maxPax),
+          bookedPax: "0",
+          manualOverride: "false",
+        },
+      },
+    },
+  });
+  const slot = parseSlot(response.data);
+  if (!slot) throw new Error("Google Calendar returned a slot without a usable start/end time");
+  return slot;
+}
+
+export interface SlotOverrideInput {
+  status?: SlotStatus;
+  maxPax?: number;
+  manualOverride?: boolean;
+  reason?: string;
+  /** ETag the operator last saw; when supplied the write is rejected if the slot moved on. */
+  expectedEtag?: string;
+}
+
+export function sanitizeNote(value: string, maxLength: number): string {
+  return value.replace(/[\r\n]+/g, " ").trim().slice(0, maxLength);
+}
+
+/**
+ * Applies an operator decision to a slot. Manual overrides are recorded so the weather worker
+ * stops re-opening (or re-cancelling) the slot, and every change leaves an audit trail in the
+ * event description.
+ */
+export async function applySlotOverride(
+  slotId: string,
+  input: SlotOverrideInput,
+): Promise<SlotEvent> {
+  const calendar = getCalendar();
+  const event = await calendar.events.get({
+    calendarId: config.PARAGLIDING_CALENDAR_ID!,
+    eventId: slotId,
+  });
+  const existing = event.data;
+  if (!existing.etag) throw new Error("Calendar event did not return an ETag");
+  if (input.expectedEtag && existing.etag !== input.expectedEtag) {
+    throw new CalendarConflictError("Slot changed since you loaded it. Reload and try again.");
+  }
+  const slot = parseSlot(existing);
+  if (!slot) throw new Error("Calendar event is not a booking slot");
+
+  const nextStatus = input.status ?? slot.status;
+  const nextMaxPax = input.maxPax ?? slot.maxPax;
+  if (nextMaxPax < slot.bookedPax) {
+    throw new Error(`Capacity cannot be below the ${slot.bookedPax} seats already booked`);
+  }
+
+  const privateProps: Record<string, string> = {
+    ...(existing.extendedProperties?.private ?? {}),
+    status: nextStatus,
+    maxPax: String(nextMaxPax),
+    bookedPax: String(slot.bookedPax),
+    manualOverride: String(input.manualOverride ?? slot.manualOverride),
+  };
+  if (input.manualOverride) {
+    privateProps.manualOverrideAt = new Date().toISOString();
+    privateProps.manualOverrideReason = sanitizeNote(input.reason ?? "operator decision", 200);
+  }
+  if (input.manualOverride === false) {
+    delete privateProps.manualOverrideAt;
+    delete privateProps.manualOverrideReason;
+  }
+
+  const prefix =
+    input.manualOverride && nextStatus === "CANCELLED"
+      ? ADMIN_CANCEL_PREFIX
+      : PREFIX_STATUS[nextStatus];
+  const note = input.reason
+    ? `\n\n[admin ${new Date().toISOString()}] ${sanitizeNote(input.reason, 500)}`
+    : "";
+
+  try {
+    const response = await calendar.events.patch(
+      {
+        calendarId: config.PARAGLIDING_CALENDAR_ID!,
+        eventId: slotId,
+        requestBody: {
+          summary: `${prefix} ${stripStatusPrefix(existing.summary ?? "Paragliding booking slot")}`,
+          description: `${existing.description ?? ""}${note}`,
+          colorId: STATUS_COLOR[nextStatus],
+          extendedProperties: { ...existing.extendedProperties, private: privateProps },
+        },
+      },
+      { headers: { "If-Match": existing.etag } },
+    );
+    const updated = parseSlot(response.data);
+    if (!updated) throw new Error("Google Calendar returned an unusable slot after the update");
+    return updated;
+  } catch (error) {
+    const statusCode = httpStatus(error);
+    if (statusCode === 412 || statusCode === 409) {
+      throw new CalendarConflictError("Slot changed since you loaded it. Reload and try again.");
+    }
+    throw error;
+  }
+}
+
+

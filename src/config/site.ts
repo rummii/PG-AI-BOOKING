@@ -44,11 +44,43 @@ const environmentSchema = z.object({
   ),
   GOOGLE_PRIVATE_KEY: z.string().optional(),
   PARAGLIDING_CALENDAR_ID: z.string().optional(),
+  SITE_CONFIG_FILE: z.string().optional(),
   ALERT_WEBHOOK_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().url().optional(),
   ),
   ADMIN_API_TOKEN: z.string().optional(),
+  ADMIN_SESSION_SECRET: z.string().min(16).optional(),
+  ADMIN_CONFIG_EVENT_ID: z
+    .string()
+    .regex(/^[a-v0-9]{5,1024}$/, "must be a valid Google Calendar event id")
+    .default("pgpolicy01"),
+  ADMIN_BOOKING_WINDOW_DAYS: numeric(14).pipe(z.number().int().min(1).max(90)),
+  ADMIN_SESSION_TTL_HOURS: numeric(8).pipe(z.number().int().min(1).max(72)),
+  ADMIN_WEB_ENABLED: z
+    .preprocess(
+      (value) =>
+        value === undefined || value === ""
+          ? true
+          : !["false", "0", "no", "off"].includes(String(value).toLowerCase()),
+      z.boolean(),
+    )
+    .default(true),
+  /**
+   * Platforms that terminate TLS at an edge proxy (Railway, Fly, Render, any ingress) forward the
+   * client protocol in `x-forwarded-proto` and the client IP in `x-forwarded-for`. Without this the
+   * session cookie never gets its `Secure` flag and every visitor shares the proxy's IP, which turns
+   * the login throttle into a global one. Only enable it behind a proxy you control.
+   */
+  TRUST_PROXY: z
+    .preprocess(
+      (value) =>
+        value === undefined || value === ""
+          ? false
+          : ["true", "1", "yes", "on"].includes(String(value).toLowerCase()),
+      z.boolean(),
+    )
+    .default(false),
   DEFAULT_MAX_PAX: numeric(1).pipe(z.number().int().min(1).max(100)),
   WEATHER_TIMEOUT_MS: numeric(10000).pipe(z.number().int().min(1000).max(120000)),
   DEEPSEEK_TIMEOUT_MS: numeric(15000).pipe(z.number().int().min(1000).max(120000)),

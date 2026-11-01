@@ -1,7 +1,8 @@
-import OpenAI from "openai";
+﻿import OpenAI from "openai";
 import { z } from "zod";
 import { config, site } from "../config/site.js";
 import type { EvaluationResult, WeatherData } from "../types.js";
+import { evaluateEnvelope } from "./envelope.js";
 
 const responseSchema = z.object({
   verdict: z.enum(["FLYABLE", "MARGINAL", "NO_GO"]),
@@ -10,71 +11,6 @@ const responseSchema = z.object({
   limiting_factors: z.array(z.string().trim().min(1)).max(12),
   reasoning_summary: z.string().trim().min(1).max(1000),
 });
-
-function directionDifference(a: number, b: number): number {
-  const difference = Math.abs(((a - b) % 360 + 360) % 360);
-  return Math.min(difference, 360 - difference);
-}
-
-function hardSafetyFactors(vectors: WeatherData[]): { unsafe: string[]; uncertain: string[] } {
-  const unsafe = new Set<string>();
-  const uncertain = new Set<string>();
-  if (!site.coordinatesConfigured) uncertain.add("Site coordinates are not configured");
-  if (vectors.length < 2) uncertain.add("Fewer than two forecast models are available");
-
-  for (const vector of vectors) {
-    const label = vector.model;
-    if (
-      vector.windSpeed10mKmh === null ||
-      vector.windSpeed80mKmh === null ||
-      vector.windDirection10mDeg === null ||
-      vector.windGusts10mKmh === null ||
-      vector.rainProbability === null ||
-      vector.precipitationMm === null ||
-      vector.cloudCeilingM === null ||
-      vector.capeJkg === null ||
-      vector.cloudCoverPercent === null
-    ) {
-      uncertain.add(`${label} forecast is missing required safety data`);
-    }
-
-    if (vector.windSpeed10mKmh !== null && vector.windSpeed10mKmh < site.minWindKmh) {
-      unsafe.add(`${label} 10m wind is below the site minimum`);
-    }
-    if (
-      (vector.windSpeed10mKmh !== null && vector.windSpeed10mKmh > site.maxWindKmh) ||
-      (vector.windSpeed80mKmh !== null && vector.windSpeed80mKmh > site.maxWindKmh)
-    ) {
-      unsafe.add(`${label} wind exceeds the site maximum`);
-    }
-    if (
-      vector.windGusts10mKmh !== null &&
-      vector.windSpeed10mKmh !== null &&
-      vector.windGusts10mKmh - vector.windSpeed10mKmh > site.maxGustSpreadKmh
-    ) {
-      unsafe.add(`${label} gust spread exceeds the site limit`);
-    }
-    if (
-      vector.windDirection10mDeg !== null &&
-      directionDifference(vector.windDirection10mDeg, site.idealHeading) > site.headingTolerance
-    ) {
-      unsafe.add(`${label} wind direction is outside the site heading envelope`);
-    }
-    if (vector.rainProbability !== null && vector.rainProbability > site.maxRainProbability) {
-      unsafe.add(`${label} rain probability exceeds the site limit`);
-    }
-    if (vector.precipitationMm !== null && vector.precipitationMm > site.maxPrecipitationMm) {
-      unsafe.add(`${label} forecast precipitation exceeds the site limit`);
-    }
-    if (vector.cloudCeilingM !== null && vector.cloudCeilingM < site.minCloudCeilingM) {
-      unsafe.add(`${label} estimated cloud base is below the site minimum`);
-    }
-    if (vector.capeJkg !== null && vector.capeJkg > site.maxCapeJkg) {
-      unsafe.add(`${label} CAPE exceeds the configured limit`);
-    }
-  }
-  return { unsafe: [...unsafe], uncertain: [...uncertain] };
-}
 
 function getClient(): OpenAI {
   if (!config.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY is not configured");
@@ -93,7 +29,7 @@ export async function evaluateSlotConditions(
   if (!Number.isFinite(slotTime.getTime())) throw new Error("Invalid slot time");
   if (weatherVectors.length === 0) throw new Error("Cannot evaluate a slot without weather vectors");
 
-  const safetyFactors = hardSafetyFactors(weatherVectors);
+  const safetyFactors = evaluateEnvelope(weatherVectors);
   if (safetyFactors.unsafe.length > 0) {
     return {
       verdict: "NO_GO",

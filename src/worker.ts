@@ -1,6 +1,8 @@
 import cron from "node-cron";
 import { config } from "./config/site.js";
 import { syncCalendarSlots } from "./services/calendar.js";
+import { materialiseTemplateSlots } from "./services/slot-admin.js";
+import { getSiteConfig } from "./services/site-config.js";
 import {
   evaluateAndSyncSlot,
   getForecastWindowEnd,
@@ -8,6 +10,36 @@ import {
 } from "./services/slot-evaluation.js";
 
 let running = false;
+
+/**
+ * Keeps the calendar stocked with the slots the weekly templates promise. Runs before the
+ * evaluation cycle so freshly created LOCKED slots can be assessed in the same pass.
+ */
+async function runMaterialisation(): Promise<void> {
+  try {
+    const siteConfig = await getSiteConfig();
+    if (siteConfig.templates.length === 0) return;
+    const result = await materialiseTemplateSlots(siteConfig, new Date());
+    if (result.created.length > 0 || result.errors.length > 0) {
+      console.info(
+        JSON.stringify({
+          event: "template_materialisation",
+          created: result.created.length,
+          planned: result.planned,
+          skippedDates: result.skippedDates.length,
+          errors: result.errors,
+        }),
+      );
+    }
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "template_materialisation_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
 
 async function runEvaluation(mode: "rolling" | "today"): Promise<void> {
   if (running) {
@@ -17,6 +49,7 @@ async function runEvaluation(mode: "rolling" | "today"): Promise<void> {
   running = true;
   const now = new Date();
   try {
+    if (mode === "rolling") await runMaterialisation();
     const slots = await syncCalendarSlots(now, getForecastWindowEnd(now));
     const selected =
       mode === "today" ? slots.filter((slot) => isCurrentLocalDay(slot.start, now)) : slots;

@@ -7,10 +7,15 @@ const bookingError = document.querySelector("#form-error");
 const bookingSuccess = document.querySelector("#booking-success");
 const dialogSlot = document.querySelector("#dialog-slot");
 const siteLocation = document.querySelector("#site-location");
+const policyNotice = document.querySelector("#policy-notice");
+const policyNoticeHeadline = document.querySelector("#policy-notice-headline");
+const policyNoticeDetail = document.querySelector("#policy-notice-detail");
+const dateRail = document.querySelector("#date-rail");
 let selectedSlot = null;
 let requestNumber = 0;
 let availableSlots = [];
 let successTimer;
+let railDate = "all";
 let siteTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 function localDateKey(date) {
@@ -61,6 +66,114 @@ function showEmpty(title, message) {
   slotList.innerHTML = `<div class="empty-state"><span class="empty-icon" aria-hidden="true">⌁</span><strong>${title}</strong><p>${message}</p></div>`;
 }
 
+const DAY_STATE_LABELS = {
+  open: "Open",
+  marginal: "Marginal",
+  full: "Fully booked",
+  locked: "Weather review",
+  blackout: "Closed",
+  closed: "Closed",
+  past: "Past",
+};
+
+function renderPolicyNotice(notice) {
+  if (!notice || !notice.detail) {
+    policyNotice.hidden = true;
+    return;
+  }
+  policyNoticeHeadline.textContent = notice.headline || "Notice";
+  policyNoticeDetail.textContent = notice.detail;
+  policyNotice.dataset.tone = notice.tone || "info";
+  policyNotice.hidden = false;
+}
+
+function syncRailSelection() {
+  for (const chip of dateRail.querySelectorAll(".date-chip")) {
+    const active = chip.dataset.date === railDate;
+    chip.classList.toggle("is-active", active);
+    chip.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function buildDateChip(label, detail, state, dateKey) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "date-chip";
+  chip.dataset.date = dateKey;
+  if (state) chip.dataset.state = state;
+  chip.setAttribute("aria-pressed", "false");
+
+  const weekday = document.createElement("span");
+  weekday.className = "date-chip-weekday";
+  weekday.textContent = label;
+  const day = document.createElement("span");
+  day.className = "date-chip-day";
+  day.textContent = detail;
+  const status = document.createElement("span");
+  status.className = "date-chip-state";
+  status.textContent = state ? DAY_STATE_LABELS[state] || state : "";
+  chip.append(weekday, day, status);
+  return chip;
+}
+
+/**
+ * The date rail mirrors the operator's policy: which days are open, which are closed, and which
+ * ones the operator is pushing. It is additive — the plain date select still works without it.
+ */
+function renderDateRail(days) {
+  if (!Array.isArray(days) || days.length === 0) {
+    dateRail.hidden = true;
+    dateRail.replaceChildren();
+    return;
+  }
+
+  dateRail.replaceChildren();
+  const allChip = buildDateChip("All", "dates", null, "all");
+  allChip.querySelector(".date-chip-state").textContent = "Every open day";
+  dateRail.append(allChip);
+
+  for (const day of days) {
+    const date = new Date(`${day.date}T12:00:00Z`);
+    const weekday = new Intl.DateTimeFormat(undefined, {
+      timeZone: siteTimeZone,
+      weekday: "short",
+    }).format(date);
+    const detail = new Intl.DateTimeFormat(undefined, {
+      timeZone: siteTimeZone,
+      day: "numeric",
+      month: "short",
+    }).format(date);
+    const chip = buildDateChip(weekday, detail, day.state, day.date);
+    const bookable = Number.isInteger(day.bookable) ? day.bookable : 0;
+    chip.querySelector(".date-chip-state").textContent =
+      bookable > 0 ? `${bookable} ${bookable === 1 ? "time" : "times"}` : DAY_STATE_LABELS[day.state] || day.state;
+    if (day.recommended) {
+      chip.classList.add("is-recommended");
+      chip.title = "Recommended by the operator";
+    }
+    if (day.focus) chip.classList.add("is-focus");
+    chip.disabled = day.state === "past" || day.state === "closed" || day.state === "blackout";
+    dateRail.append(chip);
+  }
+
+  if (railDate !== "all" && !days.some((day) => day.date === railDate)) railDate = "all";
+  syncRailSelection();
+  dateRail.hidden = false;
+}
+
+dateRail.addEventListener("click", (event) => {
+  const chip = event.target.closest(".date-chip");
+  if (!chip || chip.disabled) return;
+  railDate = chip.dataset.date;
+  if (railDate === "all") {
+    dateFilter.value = "all";
+  } else if (dateFilter.querySelector(`option[value="${railDate}"]`)) {
+    dateFilter.value = railDate;
+  }
+  syncRailSelection();
+  renderSlots(availableSlots);
+});
+
 function updateDateOptions(slots) {
   const previousDate = dateFilter.value;
   const dates = new Map();
@@ -104,7 +217,7 @@ function updateDateOptions(slots) {
 function renderSlots(slots) {
   availableSlots = slots;
   updateDateOptions(slots);
-  const filter = dateFilter.value;
+  const filter = railDate !== "all" ? railDate : dateFilter.value;
   const filtered = slots.filter((slot) =>
     filter === "all" || localDateKey(new Date(slot.start)) === filter
   );
@@ -162,12 +275,15 @@ async function loadSlots() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "We couldn't check availability just now.");
     if (currentRequest !== requestNumber) return;
+    renderPolicyNotice(data.notice || null);
+    renderDateRail(Array.isArray(data.days) ? data.days : []);
     renderSlots(Array.isArray(data.slots) ? data.slots : []);
   } catch (error) {
     if (currentRequest !== requestNumber) return;
     slotList.setAttribute("aria-busy", "false");
     slotList.innerHTML = "";
     availableSlots = [];
+    dateRail.hidden = true;
     updateDateOptions([]);
     showAvailabilityError(error instanceof Error ? error.message : "Something went wrong while checking availability.");
   }
@@ -194,7 +310,11 @@ slotList.addEventListener("click", (event) => {
   }
 });
 
-dateFilter.addEventListener("change", () => renderSlots(availableSlots));
+dateFilter.addEventListener("change", () => {
+  railDate = dateFilter.value;
+  syncRailSelection();
+  renderSlots(availableSlots);
+});
 document.querySelector(".dialog-close").addEventListener("click", () => bookingDialog.close());
 bookingDialog.addEventListener("click", (event) => {
   if (event.target === bookingDialog) bookingDialog.close();

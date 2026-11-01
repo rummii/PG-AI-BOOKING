@@ -230,6 +230,30 @@ h1, h2, h3, p { margin-top: 0; }
   .toast { right: 12px; bottom: 12px; }
 }
 
+/* --- Operator policy: banner + date rail ------------------------------------------------ */
+.policy-notice { margin: 0 0 20px; padding: 16px 18px; border: 1px solid #dfe3d6; border-radius: 4px; display: flex; gap: 14px; align-items: flex-start; background: #f0f2e8; }
+.policy-notice[hidden] { display: none; }
+.policy-notice[data-tone="focus"] { border-color: #f0c4b4; background: #fdf1ec; }
+.policy-notice[data-tone="closed"] { border-color: #e6b7b0; background: #fbeeea; }
+.policy-notice-dot { width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--coral); flex: none; }
+.policy-notice-copy strong { display: block; margin-bottom: 4px; font-family: var(--display); font-size: 14px; font-weight: 700; letter-spacing: -.2px; }
+.policy-notice-copy p { margin: 0; color: #5f6c64; font-size: 12px; line-height: 1.65; }
+
+.date-rail { padding: 18px 0 22px; display: flex; gap: 9px; overflow-x: auto; scrollbar-width: thin; }
+.date-rail[hidden] { display: none; }
+.date-chip { min-width: 84px; padding: 9px 12px; border: 1px solid #dfe2d8; border-radius: 4px; display: grid; gap: 2px; text-align: left; background: transparent; color: var(--ink); cursor: pointer; transition: border-color .2s, background .2s, transform .2s; }
+.date-chip:hover:not(:disabled) { border-color: var(--coral); transform: translateY(-1px); }
+.date-chip:disabled { opacity: .42; cursor: not-allowed; }
+.date-chip-weekday { color: #7b867e; font-size: 9px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; }
+.date-chip-day { font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: -.3px; }
+.date-chip-state { color: #79857c; font-size: 9px; }
+.date-chip.is-active { border-color: var(--green); background: var(--green); color: white; }
+.date-chip.is-active .date-chip-weekday, .date-chip.is-active .date-chip-state { color: rgba(255, 255, 255, .75); }
+.date-chip.is-recommended { border-color: #e6a48d; }
+.date-chip.is-focus .date-chip-weekday { color: var(--coral-dark); }
+.date-chip.is-active.is-focus .date-chip-weekday { color: #ffd9cc; }
+
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
