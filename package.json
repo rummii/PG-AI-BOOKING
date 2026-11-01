@@ -1,0 +1,31 @@
+{
+  "name": "paragliding-booking-engine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "worker": "node dist/worker.js",
+    "test": "tsx --test test/evaluator.test.ts test/slot-evaluation.test.ts test/calendar.test.ts",
+    "dev": "tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "googleapis": "^189.0.0",
+    "node-cron": "^4.6.0",
+    "openai": "^7.47.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}
