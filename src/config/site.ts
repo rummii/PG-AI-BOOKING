@@ -7,10 +7,29 @@ const numeric = (fallback: number) =>
     z.number().finite(),
   );
 
+/**
+ * Environment values come from dashboards, copy-paste and shells that happily carry a trailing
+ * space, a stray `\r` or an unexpected capital. The numeric and boolean settings already tolerate
+ * that; the enum settings have to as well, or a `Production` typo — or `production ` pasted into
+ * Railway's variable editor — crashes the container at boot. Genuinely unknown values still fail
+ * fast below; only case and surrounding whitespace are forgiven.
+ */
+const normalizedEnum = <T extends z.ZodType>(fallback: string, schema: T) =>
+  z.preprocess(
+    (value) => (value === undefined || value === "" ? fallback : String(value).trim().toLowerCase()),
+    schema,
+  );
+
 const environmentSchema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  NODE_ENV: normalizedEnum(
+    "development",
+    z.enum(["development", "test", "production"]).default("development"),
+  ),
   PORT: numeric(3000).pipe(z.number().int().min(1).max(65535)),
-  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  LOG_LEVEL: normalizedEnum(
+    "info",
+    z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  ),
   SITE_NAME: z.string().trim().min(1).default("Paragliding Site"),
   SITE_LAT: numeric(0).pipe(z.number().min(-90).max(90)),
   SITE_LON: numeric(0).pipe(z.number().min(-180).max(180)),
@@ -86,9 +105,32 @@ const environmentSchema = z.object({
   DEEPSEEK_TIMEOUT_MS: numeric(15000).pipe(z.number().int().min(1000).max(120000)),
 });
 
+/**
+ * Keys whose received value is safe to echo when validation fails. Everything else in this schema
+ * can hold a credential, so the raw value stays out of the logs — the key name alone is enough to
+ * find the setting, and these two are the ones a human mistypes.
+ */
+const ECHOED_ENVIRONMENT_KEYS = new Set(["NODE_ENV", "LOG_LEVEL"]);
+
 const parsedEnvironment = environmentSchema.safeParse(process.env);
 if (!parsedEnvironment.success) {
-  throw new Error(`Invalid environment configuration: ${parsedEnvironment.error.message}`);
+  /**
+   * One line per failure, `path: message` — a `zod` error's default `message` is a multi-line JSON
+   * document, which log pipelines split into fragments that look like unrelated noise (and bury
+   * whichever value actually caused the crash).
+   */
+  const diagnostics = parsedEnvironment.error.issues
+    .map((issue) => {
+      const key = issue.path.join(".") || "environment";
+      const name = String(issue.path[0]);
+      const received = ECHOED_ENVIRONMENT_KEYS.has(name)
+        ? ` (received ${JSON.stringify(process.env[name])})`
+        : "";
+      return `${key}: ${issue.message}${received}`;
+    })
+    .join("; ")
+    .replace(/\s+/g, " ");
+  throw new Error(`Invalid environment configuration: ${diagnostics}`);
 }
 
 export const config = parsedEnvironment.data;

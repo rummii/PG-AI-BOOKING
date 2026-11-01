@@ -12,7 +12,7 @@ Calendar events in the configured calendar are treated as booking slots. Event s
 
 ## Deploy to Railway
 
-The repo is already wired for it: `railway.json` builds with `npm ci && npm run build`, starts `npm start`, and gates the rollout on `/api/health`; `.nvmrc` pins Node 22; `dist/` is built inside the image and `public/` is committed, so nothing needs a separate static-host step. The server binds `0.0.0.0:$PORT`, which Railway injects — never set `PORT` yourself.
+The repo is already wired for it: `railway.json` builds with `npm run build` (Nixpacks' Node provider installs dependencies first, so nothing else belongs in there), starts `npm start`, and gates the rollout on `/api/health`; `.nvmrc` pins Node 22; `dist/` is built inside the image and `public/` is committed, so nothing needs a separate static-host step. The server binds `0.0.0.0:$PORT`, which Railway injects — never set `PORT` yourself.
 
 1. **Create the project** — Railway → *New Project* → *Deploy from GitHub repo* → pick this repository. Every push to the deployed branch rebuilds.
 2. **Web service** (`railway.json`) — needs `ADMIN_API_TOKEN` (long random string; the control plane returns `503` without it) plus the Google and site variables below.
@@ -28,6 +28,8 @@ The repo is already wired for it: `railway.json` builds with `npm ci && npm run 
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `PARAGLIDING_CALENDAR_ID` | slots and bookings; without them the page serves but availability stays `503` |
 | `DEEPSEEK_API_KEY` | optional; the deterministic envelope works without it |
 | `SITE_*` | real coordinates, timezone, and operating limits — the defaults (`0, 0`, `12–26 km/h`) are placeholders |
+
+`NODE_ENV` and `LOG_LEVEL` are trimmed and matched case-insensitively, because a hand-typed `Production` or a value pasted with a trailing space would otherwise stop the container at boot. A value that is genuinely wrong (say `staging`) still fails fast, but with a single-line message naming the key and the value it received rather than a multi-line validation dump that log viewers shred into fragments — `test/config-environment.test.ts` pins both behaviours.
 
 5. **Config storage** — by default site configuration lives in the reserved calendar event, so nothing extra is required *if* the Google variables are set. For a deployment without Google credentials, attach a volume (e.g. mounted at `/data`) and set `SITE_CONFIG_FILE=/data/site-config.json`; a file store on an ephemeral filesystem silently loses every save on redeploy.
 6. **Keep it at one replica.** The login throttle is in-process and the file store compares and swaps on a local file; `numReplicas: 1` is pinned in `railway.json` for that reason. Horizontal scaling needs a shared store first.
