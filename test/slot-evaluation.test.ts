@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EvaluationResult, SlotEvent, SlotStatus, WeatherData } from "../src/types.js";
-import type { SlotEvaluationDependencies } from "../src/services/slot-evaluation.js";
+import type { SlotEvaluationDependencies, SlotStateEvaluation } from "../src/services/slot-evaluation.js";
 
 process.env.DEEPSEEK_API_KEY = "";
 process.env.ALERT_WEBHOOK_URL = "";
@@ -101,7 +101,7 @@ test("a failed evaluation records STANDBY and retries once with a fresh ETag on 
     },
   };
 
-  const result = await evaluateAndSyncSlot(slot(), {}, dependencies);
+  const result = await evaluateAndSyncSlot(slot(), { now: NOW }, dependencies);
 
   assert.equal(result.skipped, false);
   assert.equal(result.status, "STANDBY");
@@ -125,7 +125,7 @@ test("a STANDBY write that cannot be recorded is reported instead of thrown", as
     },
   };
 
-  const result = await evaluateAndSyncSlot(slot(), {}, dependencies);
+  const result = await evaluateAndSyncSlot(slot(), { now: NOW }, dependencies);
 
   assert.equal(result.status, undefined);
   assert.match(result.error ?? "", /STANDBY could not be recorded/);
@@ -141,10 +141,27 @@ test("a flyable evaluation opens a locked slot with the event ETag", async () =>
     },
   };
 
-  const result = await evaluateAndSyncSlot(slot(), {}, dependencies);
+  const result = await evaluateAndSyncSlot(slot(), { now: NOW }, dependencies);
 
   assert.equal(result.status, "OPEN");
   assert.deepEqual(calls, [{ status: "OPEN", expectedEtag: "etag-1" }]);
+});
+
+test("the evaluation timestamp comes from the injected clock, not the wall clock", async () => {
+  let recorded: SlotStateEvaluation | undefined;
+  const dependencies: SlotEvaluationDependencies = {
+    fetchWeatherVectors: async () => [vector()],
+    evaluateSlotConditions: async () => evaluation(),
+    updateSlotState: async (_slotId, _status, slotEvaluation) => {
+      recorded = slotEvaluation;
+    },
+  };
+
+  // A slot 50 hours out only opens while "now" sits inside the 72-to-48 hour window.
+  // Passing the clock in keeps that decision reproducible on any day the suite runs.
+  await evaluateAndSyncSlot(slot(), { now: NOW }, dependencies);
+
+  assert.equal(recorded?.evaluatedAt.toISOString(), NOW.toISOString());
 });
 
 test("a NO_GO verdict cancels the slot and reports a missing abort webhook", async () => {
@@ -158,7 +175,7 @@ test("a NO_GO verdict cancels the slot and reports a missing abort webhook", asy
     },
   };
 
-  const result = await evaluateAndSyncSlot(slot(), {}, dependencies);
+  const result = await evaluateAndSyncSlot(slot(), { now: NOW }, dependencies);
 
   assert.deepEqual(calls, ["CANCELLED"]);
   assert.equal(result.status, "CANCELLED");
@@ -177,8 +194,8 @@ test("manual overrides and cancelled slots are skipped without contacting the fo
     },
   };
 
-  const overridden = await evaluateAndSyncSlot(slot({ manualOverride: true }), {}, skippedDependencies);
-  const cancelled = await evaluateAndSyncSlot(slot({ status: "CANCELLED" }), {}, skippedDependencies);
+  const overridden = await evaluateAndSyncSlot(slot({ manualOverride: true }), { now: NOW }, skippedDependencies);
+  const cancelled = await evaluateAndSyncSlot(slot({ status: "CANCELLED" }), { now: NOW }, skippedDependencies);
 
   assert.equal(overridden.skipped, true);
   assert.equal(cancelled.skipped, true);
@@ -186,7 +203,7 @@ test("manual overrides and cancelled slots are skipped without contacting the fo
 
   const forced = await evaluateAndSyncSlot(
     slot({ manualOverride: true }),
-    { ignoreManualOverride: true },
+    { ignoreManualOverride: true, now: NOW },
     { ...skippedDependencies, updateSlotState: async () => { updates += 1; } },
   );
 

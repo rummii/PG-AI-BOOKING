@@ -73,13 +73,13 @@ async function writeSlotStatus(
 
 export async function evaluateAndSyncSlot(
   slot: SlotEvent,
-  options: { ignoreManualOverride?: boolean } = {},
+  options: { ignoreManualOverride?: boolean; now?: Date } = {},
   dependencies: SlotEvaluationDependencies = defaultDependencies,
 ): Promise<SlotEvaluationOutcome> {
   if (slot.manualOverride && !options.ignoreManualOverride) return { skipped: true };
   if (slot.status === "CANCELLED") return { skipped: true };
 
-  const evaluatedAt = new Date();
+  const evaluatedAt = options.now ?? new Date();
   try {
     const vectors = await dependencies.fetchWeatherVectors(slot.start);
     const evaluation = await dependencies.evaluateSlotConditions(slot.start, vectors);
