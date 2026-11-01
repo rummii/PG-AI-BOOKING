@@ -10,9 +10,10 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "worker": "node dist/worker.js",
-    "test": "tsx --test test/evaluator.test.ts test/slot-evaluation.test.ts test/calendar.test.ts",
+    "test": "tsx --test test/evaluator.test.ts test/slot-evaluation.test.ts test/calendar.test.ts test/server.test.ts",
     "dev": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker.ts",
+    "preview": "node preview/mock-server.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

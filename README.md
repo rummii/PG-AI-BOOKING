@@ -30,6 +30,10 @@ npm start
 
 For development, use `npm run dev` and run the scheduler separately with `npm run dev:worker`. The worker evaluates the rolling 72-hour window hourly and current-local-day events every 15 minutes.
 
+## Preview with sample data
+
+`npm run preview` serves the same `public/` assets with a small in-memory demo backend on http://localhost:3100, so the booking flow can be reviewed without DeepSeek or Google Calendar credentials. It is a local-only tool: it never contacts the real calendar, the worker, or production data, and bookings reset when the process stops. Set `PREVIEW_PORT` to change the port and `PREVIEW_CONFLICT=1` to make one slot always answer `409` so the refresh-and-retry path can be inspected.
+
 ## Tests and checks
 
 ```sh

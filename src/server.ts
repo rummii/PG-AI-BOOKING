@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { config, site } from "./config/site.js";
@@ -76,10 +78,26 @@ function isoDateOrUndefined(value: unknown, field: string): Date | undefined {
   return parsed;
 }
 
+function clientErrorStatusCode(error: unknown): number {
+  if (typeof error === "object" && error !== null) {
+    const candidate = (error as { statusCode?: unknown }).statusCode;
+    if (typeof candidate === "number" && candidate >= 400 && candidate < 600) return candidate;
+  }
+  return 500;
+}
+
 app.setErrorHandler((error, request, reply) => {
-  request.log.error({ err: error }, "Request failed");
+  const statusCode = clientErrorStatusCode(error);
+  if (statusCode >= 500) {
+    request.log.error({ err: error }, "Request failed");
+  } else {
+    request.log.warn({ err: error }, "Request rejected");
+  }
   if (reply.sent) return;
-  reply.status(500).send({ error: "Internal server error" });
+  if (statusCode >= 500) return reply.status(500).send({ error: "Internal server error" });
+  return reply
+    .status(statusCode)
+    .send({ error: error instanceof Error ? error.message : "Bad request" });
 });
 
 app.get("/api/health", async () => ({ status: "ok", timestamp: new Date().toISOString() }));
@@ -190,6 +208,9 @@ async function start(): Promise<void> {
   }
 }
 
-void start();
+const entryPoint = process.argv[1];
+const isDirectRun =
+  entryPoint !== undefined && import.meta.url === pathToFileURL(resolve(entryPoint)).href;
+if (isDirectRun) void start();
 
-export { app };
+export { app, start };
