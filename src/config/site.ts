@@ -20,6 +20,14 @@ const normalizedEnum = <T extends z.ZodType>(fallback: string, schema: T) =>
     schema,
   );
 
+/**
+ * Google accepts only base32hex (`a`–`v`, `0`–`9`) for an event id you supply, and the reserved
+ * config event is inserted with this id — so it cannot be spelled `pgpolicy01`: that `y` would make
+ * the first admin save fail with "Invalid resource id value". The schema regex below encodes the
+ * same rule, and `test/config-environment.test.ts` keeps the two honest.
+ */
+export const DEFAULT_CONFIG_EVENT_ID = "bookingconfig01";
+
 const environmentSchema = z.object({
   NODE_ENV: normalizedEnum(
     "development",
@@ -57,23 +65,17 @@ const environmentSchema = z.object({
   SITE_MIN_CLOUD_CEILING_M: numeric(300).pipe(z.number().min(0)),
   SITE_MAX_CAPE_J_KG: numeric(1000).pipe(z.number().min(0)),
   DEEPSEEK_API_KEY: z.string().optional(),
-  GOOGLE_SERVICE_ACCOUNT_EMAIL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().email().optional(),
-  ),
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().email().optional(),
   GOOGLE_PRIVATE_KEY: z.string().optional(),
   PARAGLIDING_CALENDAR_ID: z.string().optional(),
   SITE_CONFIG_FILE: z.string().optional(),
-  ALERT_WEBHOOK_URL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().url().optional(),
-  ),
+  ALERT_WEBHOOK_URL: z.string().url().optional(),
   ADMIN_API_TOKEN: z.string().optional(),
   ADMIN_SESSION_SECRET: z.string().min(16).optional(),
   ADMIN_CONFIG_EVENT_ID: z
     .string()
-    .regex(/^[a-v0-9]{5,1024}$/, "must be a valid Google Calendar event id")
-    .default("pgpolicy01"),
+    .regex(/^[a-v0-9]{5,1024}$/, "must be a valid Google Calendar event id (base32hex: only a-v and 0-9)")
+    .default(DEFAULT_CONFIG_EVENT_ID),
   ADMIN_BOOKING_WINDOW_DAYS: numeric(14).pipe(z.number().int().min(1).max(90)),
   ADMIN_SESSION_TTL_HOURS: numeric(8).pipe(z.number().int().min(1).max(72)),
   ADMIN_WEB_ENABLED: z
@@ -112,7 +114,20 @@ const environmentSchema = z.object({
  */
 const ECHOED_ENVIRONMENT_KEYS = new Set(["NODE_ENV", "LOG_LEVEL"]);
 
-const parsedEnvironment = environmentSchema.safeParse(process.env);
+/**
+ * dotenv stores `KEY=` as the empty string, so a blank optional variable used to look *configured*
+ * and then fail a stricter check further down — leaving `ADMIN_SESSION_SECRET=` blank in a copy of
+ * `.env.example` stopped the container with "Too small: expected string to have >=16 characters".
+ * A blank value means "not configured" everywhere, so blanks are dropped before validation and each
+ * field's default (or absence) applies. Exported so the behaviour can be pinned directly.
+ */
+export function withoutBlanks(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  return Object.fromEntries(
+    Object.entries(env).filter(([, value]) => value === undefined || value.trim() !== ""),
+  );
+}
+
+const parsedEnvironment = environmentSchema.safeParse(withoutBlanks(process.env));
 if (!parsedEnvironment.success) {
   /**
    * One line per failure, `path: message` — a `zod` error's default `message` is a multi-line JSON
