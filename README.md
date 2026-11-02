@@ -10,6 +10,29 @@ Slot state writes are optimistic: the worker and the booking API send the calend
 
 Calendar events in the configured calendar are treated as booking slots. Event start/end times must include `dateTime`. The service preserves existing event descriptions and extended private properties. Set the private extended property `manualOverride=true` to keep the worker from changing a slot. State is written to `extendedProperties.private`.
 
+## Connect DeepSeek and Google Calendar
+
+Wire the credentials up locally first, prove them, and only then copy the same values to Railway. `npm run doctor` is the gate: it validates both integrations without writing to the calendar, spending DeepSeek tokens, or starting the server.
+
+1. **Create the credentials.** Google Cloud console → *IAM & Admin* → *Service Accounts* → pick or create one → *Keys* → *Add key* → *JSON*, and enable the **Google Calendar API** on that project. In Google Calendar open the target calendar → *Settings* → *Share with specific people* → add the service account's `client_email` as **Make changes to events**, then copy *Integrate calendar* → *Calendar ID*. For DeepSeek, create a key at `platform.deepseek.com` → *API keys*; the account needs a balance, not just a key.
+2. **Fill in `.env`** (gitignored, scaffolded from `.env.example`). Paste `GOOGLE_PRIVATE_KEY` as the single line it is inside the JSON file — `\n` escapes intact, surrounding quotes dropped — because `src/services/calendar.ts` converts those escapes back into newlines. Leave `SITE_CONFIG_FILE` empty so site config is stored in the calendar rather than a file. Never set `PARAGLIDING_CALENDAR_ID=primary`: a service account has no primary calendar, and `primary` answers `404`.
+3. **Run `npm run doctor`** and clear every `FAIL` before starting anything. It parses the private key with `crypto.createPrivateKey`, signs in with the same JWT and scope the app uses, lists one upcoming event, reads the reserved config event, and calls DeepSeek's free `GET /v1/models`. It prints key length and shape, never key material, and exits non-zero if anything fails. Re-run it once as `npm run doctor -- --write` to prove the share role is *editor*: the read checks pass for a read-only share, and a read-only calendar only fails later, on the first slot write. The write probe creates a private, transparent `[DOCTOR]` event five minutes out and deletes it immediately.
+4. **Prove the running app** — `npm start`, then `GET /api/health` answers `200` (it always does), `GET /api/slots/available` answers `200` instead of `503`, `/admin` renders overview and weather, and the first config save creates the reserved event dated 1990. Evaluate one throwaway slot and delete it afterwards.
+5. **Then copy to Railway** — the same five values (`GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `PARAGLIDING_CALENDAR_ID`, `DEEPSEEK_API_KEY`, plus the real `SITE_*` numbers) into the shared variable group, and make sure `SITE_CONFIG_FILE` is unset there. Railway's variable editor accepts the `\n`-escaped key as-is; do not "fix" the newlines.
+
+| Symptom | Meaning |
+| --- | --- |
+| `invalid_grant` / `Invalid JWT Signature` | the key does not belong to that `GOOGLE_SERVICE_ACCOUNT_EMAIL`, or the paste truncated it |
+| `error:1E08010C:DECODER routines::unsupported` | `GOOGLE_PRIVATE_KEY` is not a whole PEM: the `-----BEGIN/END PRIVATE KEY-----` lines or the `\n` escapes were lost |
+| `403 insufficientPermissions` | the calendar was not shared with the service account, or the Calendar API is disabled for the project |
+| `404` on every calendar call | wrong `PARAGLIDING_CALENDAR_ID`, or it is the string `primary` |
+| `503` on `/api/slots/available` | any of the three Google variables is missing; `/api/health` still answers `200` by design |
+| DeepSeek `401` | bad key |
+| DeepSeek `402` | the account has no balance — the key is fine |
+| `DeepSeek response failed validation` | the model answered outside the JSON contract; the slot is held at `STANDBY` rather than opened |
+
+`npm run doctor` also warns (without failing) when `SITE_LAT`/`SITE_LON` are still `0, 0`, when `SITE_CONFIG_FILE` is set, when `PARAGLIDING_CALENDAR_ID` is `primary`, or when `ADMIN_CONFIG_EVENT_ID` is not base32hex: those all run, but the first makes every forecast meaningless, the second silently bypasses the calendar config store, and the last two only fail once Google sees them.
+
 ## Deploy to Railway
 
 The repo is already wired for it: `railway.json` builds with `npm run build` (Nixpacks' Node provider installs dependencies first, so nothing else belongs in there), starts `npm start`, and gates the rollout on `/api/health`; `.nvmrc` pins Node 22; `dist/` is built inside the image and `public/` is committed, so nothing needs a separate static-host step. The server binds `0.0.0.0:$PORT`, which Railway injects — never set `PORT` yourself.
@@ -54,7 +77,7 @@ Policy can only hide or highlight slots: it never opens a slot the weather envel
 
 ### Where the configuration lives
 
-Site configuration is stored in a reserved calendar event (`ADMIN_CONFIG_EVENT_ID`, default `pgpolicy01`, dated 1990 so it can never appear in an availability query) with the JSON payload in its description. It is read through a cached `SiteConfigStore` (60-second TTL) behind one interface with calendar, file, and in-memory adapters — set `SITE_CONFIG_FILE` to use a file on a persistent volume instead, or swap in SQLite later without touching the admin API. Saves are compare-and-swap: send the `If-Match` ETag from the last read (`409` when it is stale). A calendar with no stored config falls back to defaults derived from the environment.
+Site configuration is stored in a reserved calendar event (`ADMIN_CONFIG_EVENT_ID`, default `bookingconfig01`, dated 1990 so it can never appear in an availability query) with the JSON payload in its description. The id is sent to Google as a custom event id, so it must be base32hex (`a`–`v`, `0`–`9`) — the name cannot contain a `y`, which is why it is not called `policy…`; an id that fails that rule stops the process at boot instead of failing on the first save. It is read through a cached `SiteConfigStore` (60-second TTL) behind one interface with calendar, file, and in-memory adapters — set `SITE_CONFIG_FILE` to use a file on a persistent volume instead, or swap in SQLite later without touching the admin API. Saves are compare-and-swap: send the `If-Match` ETag from the last read (`409` when it is stale). A calendar with no stored config falls back to defaults derived from the environment.
 
 
 ## Run
@@ -84,6 +107,7 @@ The same probe checks a real build: start it with the control plane on (`ADMIN_W
 ```sh
 npm run typecheck
 npm test
+npm run doctor   # credential pre-flight; needs real credentials, so CI does not run it
 ```
 
 `npm test` runs every suite in `test/` with the Node test runner: the deterministic envelope and its evaluator wrapper, slot status decisions, ETag conflict retries, calendar parsing, booking policy, the forecast series and analytics aggregation, the site-config store, and the admin HTTP surface (session cookie, CSRF enforcement, stale `If-Match`, 401 handling). GitHub Actions runs these same checks on every push to `main` and every pull request, plus a smoke test that starts the built server with no credentials and asserts `/api/slots/available` responds `503` rather than serving availability.

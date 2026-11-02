@@ -15,6 +15,7 @@
     "dev:worker": "tsx watch src/worker.ts",
     "preview": "node preview/mock-server.mjs",
     "probe": "node preview/probe.mjs",
+    "doctor": "node preview/doctor.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
